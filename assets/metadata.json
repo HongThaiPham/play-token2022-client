@@ -2,11 +2,19 @@
   "name": "Leo Token 2022",
   "symbol": "LT22",
   "description": "This is a token for play and fun",
-  "image": "https://raw.githubusercontent.com/solana-developers/opos-asset/main/assets/DeveloperPortal/image.png",
+  "image": "https://raw.githubusercontent.com/HongThaiPham/play-token2022-client/main/assets/me.jpg",
   "attributes": [
     {
-      "trait_type": "Item",
-      "value": "Developer Portal"
+      "trait_type": "Author",
+      "value": "Leo Pham"
+    },
+    {
+      "trait_type": "Country",
+      "value": "Vietnam"
+    },
+    {
+      "trait_type": "Email",
+      "value": "hongthaipro@gmail.com"
     }
   ]
 }
