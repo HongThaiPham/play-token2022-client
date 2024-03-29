@@ -1,0 +1,12 @@
+{
+  "name": "Leo Token 2022",
+  "symbol": "LT22",
+  "description": "This is a token for play and fun",
+  "image": "https://raw.githubusercontent.com/solana-developers/opos-asset/main/assets/DeveloperPortal/image.png",
+  "attributes": [
+    {
+      "trait_type": "Item",
+      "value": "Developer Portal"
+    }
+  ]
+}

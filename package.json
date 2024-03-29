@@ -4,9 +4,16 @@
   "description": "Project for Play Token 2022",
   "main": "index.js",
   "scripts": {
-    "start": "ts-node src/index.ts"
+    "start": "node src/index.mjs"
   },
   "keywords": [],
   "author": "Leo Pham <hongthaipro@gmail.com>",
-  "license": "ISC"
+  "license": "ISC",
+  "dependencies": {
+    "@solana-developers/helpers": "^2.2.0",
+    "@solana/spl-token": "^0.4.3",
+    "@solana/spl-token-metadata": "^0.1.2",
+    "@solana/web3.js": "^1.91.2",
+    "dotenv": "^16.4.5"
+  }
 }
