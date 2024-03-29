@@ -1,0 +1,12 @@
+{
+  "name": "play-token2022-client",
+  "version": "1.0.0",
+  "description": "Project for Play Token 2022",
+  "main": "index.js",
+  "scripts": {
+    "start": "ts-node src/index.ts"
+  },
+  "keywords": [],
+  "author": "Leo Pham <hongthaipro@gmail.com>",
+  "license": "ISC"
+}
