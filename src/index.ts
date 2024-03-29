@@ -1,11 +1,18 @@
 import { getKeypairFromEnvironment } from "@solana-developers/helpers";
 import {
+  LENGTH_SIZE,
+  TYPE_SIZE,
   createAccount,
   createInitializeMintInstruction,
+  getAssociatedTokenAddressSync,
   getMint,
   getTokenMetadata,
+  getTransferFeeAmount,
   getTransferFeeConfig,
   mintTo,
+  transferCheckedWithFee,
+  unpackAccount,
+  withdrawWithheldTokensFromAccounts,
 } from "@solana/spl-token";
 import { getMetadataPointerState } from "@solana/spl-token";
 import {
@@ -50,7 +57,7 @@ const user = Keypair.generate();
   const updateAuthority = wallet.publicKey;
   const withdrawWithheldAuthority = wallet.publicKey;
   const feeBasisPoints = 50; // 5 for 1000
-  const maxFee = BigInt(5000);
+  const maxFee = BigInt(500000);
 
   const metaData: TokenMetadata = {
     updateAuthority,
@@ -62,17 +69,14 @@ const user = Keypair.generate();
   };
 
   // Size of MetadataExtension 2 bytes for type, 2 bytes for length
-  const metadataExtension = 4;
+  const metadataExtension = TYPE_SIZE + LENGTH_SIZE;
   // Size of metadata
 
   const metadataLen = pack(metaData).length;
-  console.log("metadataLen", metadataLen);
   const mintLen = getMintLen([
     ExtensionType.MetadataPointer,
     ExtensionType.TransferFeeConfig,
   ]);
-
-  console.log("mintLen", mintLen);
 
   const lamport = await connection.getMinimumBalanceForRentExemption(
     mintLen + metadataExtension + metadataLen
@@ -151,23 +155,36 @@ const user = Keypair.generate();
     `Mint: ${mint.publicKey.toBase58()} created with tx: ${createTx}`
   );
 
+  await readTransferFeeConfig(mint.publicKey);
+  await readTokenMetadata(mint.publicKey);
+
+  await mintSomeInitialSupply(mint.publicKey);
+  await transferSomeToken(mint.publicKey);
+
+  await withdrawWithheldFunds(mint.publicKey);
+
+  // const transferSig = await transferCheckedWithFee(connection, wallet, sourceTokenAccount, mint.publicKey, destinationTokenAccount, wallet, transferAmount, expectedFee, TOKEN_2022_PROGRAM_ID);
+})();
+
+async function mintSomeInitialSupply(mint: PublicKey) {
   const sourceTokenAccount = await createAccount(
     connection,
     wallet,
-    mint.publicKey,
-    user.publicKey,
+    mint,
+    wallet.publicKey,
     undefined,
     {
       commitment: "confirmed",
     },
     TOKEN_2022_PROGRAM_ID
   );
-  const mintSupply = BigInt(1000000000);
+
+  const mintSupply = BigInt(1000000000000);
 
   const mintTx = await mintTo(
     connection,
     wallet,
-    mint.publicKey,
+    mint,
     sourceTokenAccount,
     wallet.publicKey,
     mintSupply,
@@ -179,28 +196,113 @@ const user = Keypair.generate();
   console.log(
     `Minted: ${mintSupply} to ${sourceTokenAccount.toBase58()} with tx: ${mintTx}`
   );
+}
+
+async function transferSomeToken(mint: PublicKey) {
+  console.log("Transfer some token");
+  const mintInfo = await getMint(
+    connection,
+    mint,
+    undefined,
+    TOKEN_2022_PROGRAM_ID
+  );
+  const sourceTokenAccount = getAssociatedTokenAddressSync(
+    mint,
+    wallet.publicKey,
+    false,
+    TOKEN_2022_PROGRAM_ID
+  );
 
   const destinationTokenAccount = await createAccount(
     connection,
     wallet,
-    mint.publicKey,
+    mint,
     user.publicKey,
     Keypair.generate(),
     undefined,
     TOKEN_2022_PROGRAM_ID
   );
-  const transferAmount = BigInt(1000);
-  const expectedFee = await calculateTransferFee(
-    mint.publicKey,
-    transferAmount
-  );
+  const transferAmount = BigInt(1000000000);
+  const expectedFee = await calculateTransferFee(mint, transferAmount);
   console.log("Expected Fee:", expectedFee);
 
-  // await readTransferFeeConfig(mint.publicKey);
-  await readTokenMetadata(mint.publicKey);
+  const transferTx = await transferCheckedWithFee(
+    connection,
+    wallet,
+    sourceTokenAccount,
+    mint,
+    destinationTokenAccount,
+    wallet.publicKey,
+    transferAmount,
+    mintInfo.decimals,
+    expectedFee,
+    [],
+    undefined,
+    TOKEN_2022_PROGRAM_ID
+  );
 
-  // const transferSig = await transferCheckedWithFee(connection, wallet, sourceTokenAccount, mint.publicKey, destinationTokenAccount, wallet, transferAmount, expectedFee, TOKEN_2022_PROGRAM_ID);
-})();
+  console.log(
+    `Transferred: ${transferAmount} from ${sourceTokenAccount.toBase58()} to ${destinationTokenAccount.toBase58()} with tx: ${transferTx}`
+  );
+}
+
+async function withdrawWithheldFunds(mint: PublicKey) {
+  const allAccounts = await connection.getProgramAccounts(
+    TOKEN_2022_PROGRAM_ID,
+    {
+      commitment: "confirmed",
+      filters: [
+        {
+          memcmp: {
+            offset: 0,
+            bytes: mint.toString(), // Mint Account address
+          },
+        },
+      ],
+    }
+  );
+
+  const accountsToWithdrawFrom = allAccounts.filter((accountInfo) => {
+    const account = unpackAccount(
+      accountInfo.pubkey, // Token Account address
+      accountInfo.account, // Token Account data
+      TOKEN_2022_PROGRAM_ID // Token Extension Program ID
+    );
+
+    // Extract transfer fee data from each account
+    const transferFeeAmount = getTransferFeeAmount(account);
+
+    // Check if fees are available to be withdrawn
+    return transferFeeAmount !== null && transferFeeAmount.withheldAmount > 0;
+  });
+
+  const vault = Keypair.generate();
+
+  const vaultTokenAccount = await createAccount(
+    connection,
+    wallet,
+    mint,
+    vault.publicKey,
+    Keypair.generate(),
+    undefined,
+    TOKEN_2022_PROGRAM_ID
+  );
+  const withdrawWithheldTx = await withdrawWithheldTokensFromAccounts(
+    connection,
+    wallet,
+    mint,
+    vaultTokenAccount,
+    wallet.publicKey,
+    [],
+    accountsToWithdrawFrom.map((account) => account.pubkey),
+    undefined,
+    TOKEN_2022_PROGRAM_ID
+  );
+
+  console.log(
+    `Withdrawn fees from ${accountsToWithdrawFrom.length} accounts with tx: ${withdrawWithheldTx}`
+  );
+}
 
 async function calculateTransferFee(mint: PublicKey, transferAmount: bigint) {
   const feeConfig = await readTransferFeeConfig(mint);
@@ -223,14 +325,14 @@ async function readTransferFeeConfig(mint: PublicKey) {
   );
 
   const transferFeeConfig = await getTransferFeeConfig(mintInfo);
-  // console.log(
-  //   "\nTransfer Fee Config:",
-  //   JSON.stringify(
-  //     transferFeeConfig,
-  //     (_, v) => (typeof v === "bigint" ? v.toString() : v),
-  //     2
-  //   )
-  // );
+  console.log(
+    "\nTransfer Fee Config:",
+    JSON.stringify(
+      transferFeeConfig,
+      (_, v) => (typeof v === "bigint" ? v.toString() : v),
+      2
+    )
+  );
   return transferFeeConfig;
 }
 
