@@ -1,16 +1,24 @@
-import { getKeypairFromEnvironment } from "@solana-developers/helpers";
 import {
+  getKeypairFromEnvironment,
+  getKeypairFromFile,
+} from "@solana-developers/helpers";
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
   LENGTH_SIZE,
   TYPE_SIZE,
   createAccount,
   createInitializeMintInstruction,
+  createInitializeTransferHookInstruction,
   getAssociatedTokenAddressSync,
   getMint,
   getTokenMetadata,
   getTransferFeeAmount,
   getTransferFeeConfig,
+  getTransferHook,
+  getTransferHookAccount,
   mintTo,
   transferCheckedWithFee,
+  transferCheckedWithFeeAndTransferHook,
   unpackAccount,
   withdrawWithheldTokensFromAccounts,
 } from "@solana/spl-token";
@@ -40,10 +48,17 @@ import {
 import * as dotenv from "dotenv";
 import { createInitializeMetadataPointerInstruction } from "@solana/spl-token";
 dotenv.config();
+import * as anchor from "@coral-xyz/anchor";
+import { Program, AnchorProvider, Wallet } from "@coral-xyz/anchor";
+import { Transferhook, IDL } from "../transferhook/target/types/transferhook";
 
 const connection = new Connection(clusterApiUrl("devnet"), "confirmed");
 
+// const localWallet = getKeypairFromFile("~/.config/solana/id.json");
 const wallet = getKeypairFromEnvironment("SOLANA_WALLET_SECRET_KEY");
+const TRANSFER_HOOK_PROGRAM_ID = new PublicKey(
+  "FWD3wDGsJc5ACV9fbDuV5VjprcSGfPvxzcb6WmbjjLm7"
+);
 
 const user = Keypair.generate();
 // console.log(payer.publicKey.toBase58())
@@ -76,6 +91,7 @@ const user = Keypair.generate();
   const mintLen = getMintLen([
     ExtensionType.MetadataPointer,
     ExtensionType.TransferFeeConfig,
+    ExtensionType.TransferHook,
   ]);
 
   const lamport = await connection.getMinimumBalanceForRentExemption(
@@ -137,10 +153,19 @@ const user = Keypair.generate();
     TOKEN_2022_PROGRAM_ID
   );
 
+  const initializeTransferHookInstruction =
+    createInitializeTransferHookInstruction(
+      mint.publicKey,
+      wallet.publicKey,
+      TRANSFER_HOOK_PROGRAM_ID,
+      TOKEN_2022_PROGRAM_ID
+    );
+
   const transactions = new Transaction().add(
     createAccountInstruction,
     initializeMetadataPointerInstruction,
     initializeTransferFeeConfigInstruction,
+    initializeTransferHookInstruction,
     initializeMintInstruction,
     initializeMetadataInstruction,
     updateMetadataFieldInstruction
@@ -155,16 +180,61 @@ const user = Keypair.generate();
     `Mint: ${mint.publicKey.toBase58()} created with tx: ${createTx}`
   );
 
+  await setupTransferHook(mint.publicKey);
+
   await readTransferFeeConfig(mint.publicKey);
   await readTokenMetadata(mint.publicKey);
+
+  await readTransferHookConfig(mint.publicKey);
 
   await mintSomeInitialSupply(mint.publicKey);
   await transferSomeToken(mint.publicKey);
 
-  await withdrawWithheldFunds(mint.publicKey);
-
-  // const transferSig = await transferCheckedWithFee(connection, wallet, sourceTokenAccount, mint.publicKey, destinationTokenAccount, wallet, transferAmount, expectedFee, TOKEN_2022_PROGRAM_ID);
+  // await withdrawWithheldFunds(mint.publicKey);
 })();
+
+async function setupTransferHook(mint: PublicKey) {
+  const provider = new AnchorProvider(connection, new Wallet(wallet), {
+    commitment: "confirmed",
+  });
+
+  const program = new Program<Transferhook>(
+    IDL,
+    TRANSFER_HOOK_PROGRAM_ID,
+    provider
+  );
+
+  const [extraAccountMetaListPDA] = PublicKey.findProgramAddressSync(
+    [Buffer.from("extra-account-metas"), mint.toBuffer()],
+    program.programId
+  );
+
+  await program.methods
+    .initializeExtraAccountMetaList()
+    .accounts({
+      payer: wallet.publicKey,
+      extraAccountMetaList: extraAccountMetaListPDA,
+      mint,
+      tokenProgram: TOKEN_2022_PROGRAM_ID,
+      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+    })
+    .signers([wallet])
+    .rpc();
+}
+
+async function readTransferHookConfig(mint: PublicKey) {
+  const mintInfo = await getMint(
+    connection,
+    mint,
+    undefined,
+    TOKEN_2022_PROGRAM_ID
+  );
+
+  const transferHook = getTransferHook(mintInfo);
+
+  console.log("Transfer Hook:", JSON.stringify(transferHook, null, 2));
+}
 
 async function mintSomeInitialSupply(mint: PublicKey) {
   const sourceTokenAccount = await createAccount(
@@ -226,7 +296,7 @@ async function transferSomeToken(mint: PublicKey) {
   const expectedFee = await calculateTransferFee(mint, transferAmount);
   console.log("Expected Fee:", expectedFee);
 
-  const transferTx = await transferCheckedWithFee(
+  const transferTx = await transferCheckedWithFeeAndTransferHook(
     connection,
     wallet,
     sourceTokenAccount,
